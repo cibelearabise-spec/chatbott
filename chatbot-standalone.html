@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chatbot Agent (standalone)</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #262b36;
+    --text: #e7e9ee; --muted: #8b93a3; --user: #3b6fed;
+    --agent: #232735; --accent: #5ee6c8; --danger: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; margin-left: auto; margin-right: 8px; }
+  header button {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+  header button:hover { border-color: var(--accent); }
+
+  #chat {
+    flex: 1; overflow-y: auto; padding: 20px;
+    display: flex; flex-direction: column; gap: 12px;
+    max-width: 720px; width: 100%; margin: 0 auto;
+  }
+  .msg { padding: 10px 14px; border-radius: 14px; max-width: 80%; line-height: 1.45; font-size: 14.5px; white-space: pre-wrap; }
+  .msg.user { background: var(--user); align-self: flex-end; border-bottom-right-radius: 4px; }
+  .msg.agent { background: var(--agent); align-self: flex-start; border-bottom-left-radius: 4px; }
+  .msg.system { align-self: center; color: var(--muted); font-size: 12.5px; background: transparent; text-align: center; }
+  .msg.error { align-self: center; color: var(--danger); font-size: 12.5px; background: transparent; text-align: center; }
+  .msg.typing { color: var(--muted); font-style: italic; }
+
+  form#composer {
+    border-top: 1px solid var(--border); padding: 14px 20px; display: flex; gap: 10px;
+    max-width: 720px; width: 100%; margin: 0 auto;
+  }
+  #input {
+    flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 12px 14px; border-radius: 10px; font-size: 14.5px; outline: none;
+  }
+  #input:focus { border-color: var(--accent); }
+  button[type="submit"] {
+    background: var(--accent); color: #08110f; border: none; padding: 0 20px;
+    border-radius: 10px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  #overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center; z-index: 10;
+  }
+  #overlay.hidden { display: none; }
+  #settingsBox {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 24px; width: 90%; max-width: 420px;
+  }
+  #settingsBox h2 { margin: 0 0 6px; font-size: 16px; }
+  #settingsBox p { color: var(--muted); font-size: 13px; margin: 0 0 16px; line-height: 1.5; }
+  #settingsBox label { font-size: 12.5px; color: var(--muted); display: block; margin: 12px 0 4px; }
+  #settingsBox select, #settingsBox input {
+    width: 100%; background: #0f1115; border: 1px solid var(--border); color: var(--text);
+    padding: 10px 12px; border-radius: 8px; font-size: 14px;
+  }
+  #settingsBox .links { font-size: 12px; margin-top: 6px; }
+  #settingsBox .links a { color: var(--accent); }
+  #settingsBox .actions { display: flex; gap: 10px; margin-top: 20px; }
+  #settingsBox button.primary {
+    flex: 1; background: var(--accent); color: #08110f; border: none;
+    padding: 10px; border-radius: 8px; font-weight: 600; cursor: pointer;
+  }
+  #settingsBox button.secondary {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    padding: 10px 14px; border-radius: 8px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="dot"></div>
+  <h1>Chatbot Agent</h1>
+  <div class="sub" id="status">não configurado</div>
+  <button id="settingsBtn" type="button">⚙ Configurar</button>
+</header>
+
+<div id="chat"></div>
+
+<form id="composer">
+  <input id="input" type="text" placeholder="Digite sua mensagem..." autocomplete="off" />
+  <button type="submit">Enviar</button>
+</form>
+
+<div id="overlay">
+  <div id="settingsBox">
+    <h2>Configuração</h2>
+    <p>
+      Sua chave fica <strong>só no seu navegador</strong> (localStorage) — nunca é enviada
+      pra nenhum lugar além da própria API do provedor escolhido, e nunca fica salva neste
+      arquivo. Escolha um provedor gratuito e cole sua chave:
+    </p>
+
+    <label>Provedor</label>
+    <select id="providerSelect">
+      <option value="gemini">Google Gemini (gratuito)</option>
+      <option value="groq">Groq (gratuito)</option>
+    </select>
+
+    <label>Chave de API</label>
+    <input id="apiKeyInput" type="password" placeholder="Cole sua chave aqui" />
+    <div class="links" id="providerLink"></div>
+
+    <label>Modelo (avançado, opcional)</label>
+    <input id="modelInput" type="text" placeholder="deixe em branco para usar o padrão" />
+
+    <div class="actions">
+      <button class="secondary" id="cancelSettings" type="button">Cancelar</button>
+      <button class="primary" id="saveSettings" type="button">Salvar e conversar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   ETAPA 1-3: propósito e system prompt do agente
+   ========================================================================= */
+const SYSTEM_PROMPT = `Você é um Agente de Suporte Genérico, um agente de IA.
+
+Seu objetivo: ajudar clientes com dúvidas sobre pedidos, produtos e suporte geral,
+usando a base de conhecimento da empresa e ferramentas internas.
+
+Regras:
+1. Responda perguntas usando a base de conhecimento (tool search_knowledge_base) sempre que a pergunta envolver políticas, produtos ou informações da empresa.
+2. Use get_order_status para consultar pedidos. Nunca invente status de pedido.
+3. NUNCA modifique, cancele ou reembolse um pedido sem confirmação explícita do usuário.
+4. NUNCA exponha dados sensíveis de outros clientes.
+5. Para ações de risco (enviar e-mail, abrir ticket), sempre explique o que vai fazer antes de chamar a ferramenta.
+6. Se a informação não estiver disponível, diga que não sabe em vez de inventar.
+7. Seja direto, educado e objetivo.`;
+
+const DEFAULT_MODELS = { gemini: "gemini-2.5-flash", groq: "llama-3.3-70b-versatile" };
+const PROVIDER_KEY_LINKS = {
+  gemini: '<a href="https://aistudio.google.com/apikey" target="_blank">Pegar chave grátis do Gemini →</a>',
+  groq: '<a href="https://console.groq.com/keys" target="_blank">Pegar chave grátis do Groq →</a>',
+};
+
+/* =========================================================================
+   ETAPA 5: base de conhecimento (RAG simplificado, busca por palavra-chave)
+   ========================================================================= */
+const KNOWLEDGE_BASE = [
+  {
+    source: "politica_devolucao",
+    content: `Política de devolução: produtos podem ser devolvidos em até 30 dias corridos
+após o recebimento, desde que estejam na embalagem original e sem sinais de uso. O reembolso
+é processado em até 7 dias úteis após recebermos o produto de volta, no mesmo meio de
+pagamento da compra. Produtos personalizados ou de higiene pessoal não podem ser devolvidos,
+exceto em caso de defeito. Para iniciar uma devolução, informe o número do pedido e o motivo.`,
+  },
+  {
+    source: "politica_entrega",
+    content: `Política de entrega: o prazo padrão é de 5 a 10 dias úteis, dependendo da região.
+Pedidos com frete expresso chegam em até 3 dias úteis nas capitais. Caso o pedido não chegue
+dentro do prazo, entre em contato com o suporte para abrirmos uma investigação com a
+transportadora. Não fazemos entregas em caixas postais.`,
+  },
+];
+
+function searchKnowledgeBase(query) {
+  const words = query.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  const scored = KNOWLEDGE_BASE.map((doc) => {
+    const lower = doc.content.toLowerCase();
+    const score = words.reduce((acc, w) => acc + (lower.includes(w) ? 1 : 0), 0);
+    return { ...doc, score };
+  }).filter((d) => d.score > 0);
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 2);
+}
+
+/* =========================================================================
+   ETAPA 6: tools (mockadas, mesmo esquema do protótipo em Python)
+   ========================================================================= */
+const FAKE_ORDERS = {
+  "12345": { status: "Saiu para entrega", eta: "hoje até 18h", value: 249.9 },
+  "67890": { status: "Em separação no centro de distribuição", eta: "em 3 dias úteis", value: 899.0 },
+};
+const FAKE_PRODUCTS = [
+  { id: "P1", name: "Fone de ouvido Bluetooth X200", price: 199.9, stock: 12 },
+  { id: "P2", name: "Teclado mecânico compacto", price: 349.0, stock: 0 },
+  { id: "P3", name: "Mouse ergonômico wireless", price: 129.9, stock: 30 },
+];
+let TICKETS = [];
+
+const TOOL_DEFS = [
+  { name: "search_knowledge_base", description: "Busca informações na base de conhecimento da empresa (políticas, FAQ, etc).",
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+  { name: "get_order_status", description: "Consulta o status de um pedido pelo número.",
+    parameters: { type: "object", properties: { order_id: { type: "string" } }, required: ["order_id"] } },
+  { name: "search_products", description: "Busca produtos disponíveis por nome ou palavra-chave.",
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+  { name: "create_ticket", description: "Abre um chamado de suporte para um problema que não pôde ser resolvido diretamente.",
+    parameters: { type: "object", properties: { subject: { type: "string" }, description: { type: "string" }, order_id: { type: "string" } }, required: ["subject", "description"] } },
+  { name: "send_email", description: "Envia um e-mail de confirmação/notificação para o cliente.",
+    parameters: { type: "object", properties: { to: { type: "string" }, subject: { type: "string" }, body: { type: "string" } }, required: ["to", "subject", "body"] } },
+];
+
+function executeTool(name, input) {
+  if (name === "search_knowledge_base") {
+    const results = searchKnowledgeBase(input.query || "");
+    return results.length ? { found: true, results } : { found: false, message: "Nada relevante encontrado." };
+  }
+  if (name === "get_order_status") {
+    const order = FAKE_ORDERS[input.order_id];
+    return order ? { found: true, ...order } : { found: false, message: "Pedido não encontrado." };
+  }
+  if (name === "search_products") {
+    const q = (input.query || "").toLowerCase();
+    const matches = FAKE_PRODUCTS.filter((p) => p.name.toLowerCase().includes(q));
+    return { count: matches.length, products: matches };
+  }
+  if (name === "create_ticket") {
+    const ticket = { id: TICKETS.length + 1, ...input };
+    TICKETS.push(ticket);
+    return { success: true, ticket_id: ticket.id };
+  }
+  if (name === "send_email") {
+    return { success: true, message: `E-mail enviado para ${input.to}.` };
+  }
+  return { error: `Tool desconhecida: ${name}` };
+}
+
+/* =========================================================================
+   ETAPAS 8-9: guardrails + human-in-the-loop (confirm() do navegador)
+   ========================================================================= */
+const HIGH_RISK_TOOLS = new Set(["send_email", "create_ticket"]);
+const FORBIDDEN_TOOLS = new Set(["delete_customer_data", "make_unauthorized_purchase"]);
+const HIGH_RISK_VALUE_THRESHOLD = 500;
+
+function guardedExecute(name, input) {
+  if (FORBIDDEN_TOOLS.has(name)) {
+    throw new Error(`Ação '${name}' não é permitida para este agente.`);
+  }
+  const value = input.value ?? input.amount;
+  const highRisk = HIGH_RISK_TOOLS.has(name) || (value !== undefined && Number(value) >= HIGH_RISK_VALUE_THRESHOLD);
+  if (highRisk) {
+    const approved = confirm(`[Confirmação necessária]\nO agente quer executar "${name}" com:\n${JSON.stringify(input, null, 2)}\n\nConfirmar?`);
+    if (!approved) return { cancelled: true, reason: "Usuário não confirmou a ação de risco." };
+  }
+  return executeTool(name, input);
+}
+
+/* =========================================================================
+   ETAPA 4: memória — mantida em memória da aba + persistida em sessionStorage
+   ========================================================================= */
+let conversationState = null; // { provider, contents } (gemini) ou { provider, messages } (groq)
+
+function loadConversation() {
+  const saved = sessionStorage.getItem("agent_conversation");
+  if (saved) {
+    try { return JSON.parse(saved); } catch (e) { return null; }
+  }
+  return null;
+}
+function saveConversation() {
+  sessionStorage.setItem("agent_conversation", JSON.stringify(conversationState));
+}
+
+/* =========================================================================
+   ETAPA 2 e 7: chamada ao LLM + loop de tool calling, por provedor
+   ========================================================================= */
+const MAX_TOOL_ITERATIONS = 5;
+
+async function runGeminiTurn(apiKey, model, userText) {
+  if (!conversationState || conversationState.provider !== "gemini") {
+    conversationState = { provider: "gemini", contents: [] };
+  }
+  conversationState.contents.push({ role: "user", parts: [{ text: userText }] });
+
+  const tools = [{ functionDeclarations: TOOL_DEFS.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
+
+  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify({
+        contents: conversationState.contents,
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        tools,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error?.message || `Erro na API Gemini (${res.status})`);
+
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const functionCalls = parts.filter((p) => p.functionCall).map((p) => p.functionCall);
+
+    conversationState.contents.push({ role: "model", parts });
+
+    if (functionCalls.length === 0) {
+      return parts.map((p) => p.text || "").join("");
+    }
+
+    const responseParts = [];
+    for (const fc of functionCalls) {
+      let output;
+      try {
+        output = fc.name === "search_knowledge_base" ? executeTool(fc.name, fc.args || {}) : guardedExecute(fc.name, fc.args || {});
+      } catch (e) {
+        output = { error: e.message };
+      }
+      responseParts.push({ functionResponse: { name: fc.name, response: { result: output } } });
+    }
+    conversationState.contents.push({ role: "user", parts: responseParts });
+  }
+  return "Não consegui concluir a solicitação (limite de etapas atingido).";
+}
+
+async function runGroqTurn(apiKey, model, userText) {
+  if (!conversationState || conversationState.provider !== "groq") {
+    conversationState = { provider: "groq", messages: [{ role: "system", content: SYSTEM_PROMPT }] };
+  }
+  conversationState.messages.push({ role: "user", content: userText });
+
+  const tools = TOOL_DEFS.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+
+  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, messages: conversationState.messages, tools, temperature: 0.3, max_tokens: 1024 }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error?.message || `Erro na API Groq (${res.status})`);
+
+    const msg = data.choices[0].message;
+
+    if (!msg.tool_calls) {
+      conversationState.messages.push({ role: "assistant", content: msg.content || "" });
+      return msg.content || "";
+    }
+
+    conversationState.messages.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
+
+    for (const tc of msg.tool_calls) {
+      const name = tc.function.name;
+      let input = {};
+      try { input = JSON.parse(tc.function.arguments || "{}"); } catch (e) {}
+      let output;
+      try {
+        output = name === "search_knowledge_base" ? executeTool(name, input) : guardedExecute(name, input);
+      } catch (e) {
+        output = { error: e.message };
+      }
+      conversationState.messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(output) });
+    }
+  }
+  return "Não consegui concluir a solicitação (limite de etapas atingido).";
+}
+
+async function runAgentTurn(userText) {
+  const cfg = getConfig();
+  if (!cfg) throw new Error("Configure sua chave de API primeiro (botão Configurar).");
+  const text = cfg.provider === "gemini" ? await runGeminiTurn(cfg.apiKey, cfg.model, userText) : await runGroqTurn(cfg.apiKey, cfg.model, userText);
+  saveConversation();
+  return text;
+}
+
+/* =========================================================================
+   Configuração (chave fica só no localStorage do navegador)
+   ========================================================================= */
+function getConfig() {
+  const provider = localStorage.getItem("agent_provider");
+  const apiKey = localStorage.getItem("agent_api_key");
+  const model = localStorage.getItem("agent_model") || DEFAULT_MODELS[provider];
+  if (!provider || !apiKey) return null;
+  return { provider, apiKey, model };
+}
+
+/* =========================================================================
+   UI
+   ========================================================================= */
+const chatEl = document.getElementById("chat");
+const form = document.getElementById("composer");
+const input = document.getElementById("input");
+const statusEl = document.getElementById("status");
+const overlay = document.getElementById("overlay");
+const providerSelect = document.getElementById("providerSelect");
+const apiKeyInput = document.getElementById("apiKeyInput");
+const modelInput = document.getElementById("modelInput");
+const providerLink = document.getElementById("providerLink");
+
+function addMessage(text, role) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.textContent = text;
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
+}
+
+function updateStatus() {
+  const cfg = getConfig();
+  statusEl.textContent = cfg ? `${cfg.provider} · ${cfg.model}` : "não configurado";
+}
+
+function openSettings() {
+  const cfg = getConfig();
+  providerSelect.value = cfg?.provider || "gemini";
+  apiKeyInput.value = cfg?.apiKey || "";
+  modelInput.value = localStorage.getItem("agent_model") || "";
+  updateProviderLink();
+  overlay.classList.remove("hidden");
+}
+function updateProviderLink() {
+  providerLink.innerHTML = PROVIDER_KEY_LINKS[providerSelect.value];
+}
+providerSelect.addEventListener("change", updateProviderLink);
+
+document.getElementById("settingsBtn").addEventListener("click", openSettings);
+document.getElementById("cancelSettings").addEventListener("click", () => overlay.classList.add("hidden"));
+
+document.getElementById("saveSettings").addEventListener("click", () => {
+  const provider = providerSelect.value;
+  const apiKey = apiKeyInput.value.trim();
+  const model = modelInput.value.trim();
+  if (!apiKey) { alert("Cole uma chave de API."); return; }
+
+  localStorage.setItem("agent_provider", provider);
+  localStorage.setItem("agent_api_key", apiKey);
+  if (model) localStorage.setItem("agent_model", model); else localStorage.removeItem("agent_model");
+
+  conversationState = null;
+  sessionStorage.removeItem("agent_conversation");
+  chatEl.innerHTML = "";
+  addMessage("Configuração salva! Pode conversar.", "system");
+
+  updateStatus();
+  overlay.classList.add("hidden");
+});
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+
+  const cfg = getConfig();
+  if (!cfg) { openSettings(); return; }
+
+  addMessage(text, "user");
+  input.value = "";
+  const typingEl = addMessage("digitando...", "agent typing");
+
+  try {
+    const reply = await runAgentTurn(text);
+    typingEl.remove();
+    addMessage(reply, "agent");
+  } catch (err) {
+    typingEl.remove();
+    addMessage(err.message || "Erro inesperado.", "error");
+  }
+});
+
+// inicialização
+conversationState = loadConversation();
+updateStatus();
+if (!getConfig()) {
+  openSettings();
+} else {
+  overlay.classList.add("hidden");
+  addMessage("Oi! Sou o agente de suporte. Pergunte sobre política de devolução, entrega, status de pedido (ex: 12345 ou 67890), ou produtos.", "agent");
+}
+</script>
+
+</body>
+</html>
