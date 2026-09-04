@@ -56,6 +56,24 @@
   }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
 
+  #attachBtn {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    width: 44px; border-radius: 10px; cursor: pointer; font-size: 18px;
+  }
+  #attachBtn:hover { border-color: var(--accent); }
+  #attachmentChip {
+    max-width: 720px; width: 100%; margin: 0 auto; padding: 0 20px 8px;
+    display: none; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted);
+  }
+  #attachmentChip.visible { display: flex; }
+  #attachmentChip .chip {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 5px 10px; display: flex; align-items: center; gap: 8px;
+  }
+  #attachmentChip button {
+    background: none; border: none; color: var(--danger); cursor: pointer; font-size: 14px; padding: 0;
+  }
+
   #overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6);
     display: flex; align-items: center; justify-content: center; z-index: 10;
@@ -96,7 +114,16 @@
 
 <div id="chat"></div>
 
+<div id="attachmentChip">
+  <div class="chip">
+    <span id="attachmentName"></span>
+    <button id="removeAttachment" type="button" title="Remover anexo">✕</button>
+  </div>
+</div>
+
 <form id="composer">
+  <button id="attachBtn" type="button" title="Anexar arquivo">📎</button>
+  <input id="fileInput" type="file" style="display:none" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" />
   <input id="input" type="text" placeholder="Digite sua mensagem..." autocomplete="off" />
   <button type="submit">Enviar</button>
 </form>
@@ -148,7 +175,7 @@ Regras:
 6. Se a informação não estiver disponível, diga que não sabe em vez de inventar.
 7. Seja direto, educado e objetivo.`;
 
-const DEFAULT_MODELS = { gemini: "gemini-2.5-flash", groq: "llama-3.3-70b-versatile" };
+const DEFAULT_MODELS = { gemini: "gemini-3.6-flash", groq: "llama-3.3-70b-versatile" };
 const PROVIDER_KEY_LINKS = {
   gemini: '<a href="https://aistudio.google.com/apikey" target="_blank">Pegar chave grátis do Gemini →</a>',
   groq: '<a href="https://console.groq.com/keys" target="_blank">Pegar chave grátis do Groq →</a>',
@@ -259,6 +286,63 @@ function guardedExecute(name, input) {
 }
 
 /* =========================================================================
+   Anexos de arquivo (imagens/PDF via inlineData no Gemini, texto p/ ambos)
+   ========================================================================= */
+const BINARY_TYPES = /^image\//;
+const MAX_TEXT_CHARS = 20000; // corta arquivos de texto muito grandes antes de enviar
+const MAX_BINARY_BYTES = 15 * 1024 * 1024; // limite de anexo binário (imagem/PDF)
+
+function buildUserPartsGemini(userText, attachment) {
+  const parts = [{ text: userText || (attachment ? `Analise o arquivo anexado (${attachment.name}).` : "") }];
+  if (attachment) {
+    if (attachment.kind === "binary") {
+      parts.push({ inlineData: { mimeType: attachment.mimeType, data: attachment.data } });
+    } else if (attachment.kind === "text") {
+      const trimmed = attachment.text.slice(0, MAX_TEXT_CHARS);
+      parts[0].text += `\n\n--- Conteúdo do arquivo anexado (${attachment.name}) ---\n${trimmed}\n--- fim do arquivo ---`;
+    }
+  }
+  return parts;
+}
+
+function buildUserContentGroq(userText, attachment) {
+  let content = userText || (attachment ? `Analise o arquivo anexado (${attachment.name}).` : "");
+  if (attachment) {
+    if (attachment.kind === "text") {
+      const trimmed = attachment.text.slice(0, MAX_TEXT_CHARS);
+      content += `\n\n--- Conteúdo do arquivo anexado (${attachment.name}) ---\n${trimmed}\n--- fim do arquivo ---`;
+    } else {
+      content += `\n\n[Aviso: anexos de imagem/PDF não são suportados com o provedor Groq neste protótipo — use o Gemini para isso, ou anexe um arquivo de texto.]`;
+    }
+  }
+  return content;
+}
+
+function readFileAsAttachment(file) {
+  return new Promise((resolve, reject) => {
+    const isBinary = BINARY_TYPES.test(file.type) || file.type === "application/pdf";
+    if (isBinary) {
+      if (file.size > MAX_BINARY_BYTES) {
+        reject(new Error(`Arquivo muito grande (máx. ${(MAX_BINARY_BYTES / 1024 / 1024).toFixed(0)}MB para imagens/PDF).`));
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result.split(",")[1];
+        resolve({ kind: "binary", name: file.name, mimeType: file.type || "application/pdf", data: base64 });
+      };
+      reader.onerror = () => reject(new Error("Não consegui ler o arquivo."));
+      reader.readAsDataURL(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ kind: "text", name: file.name, text: reader.result });
+      reader.onerror = () => reject(new Error("Não consegui ler o arquivo."));
+      reader.readAsText(file);
+    }
+  });
+}
+
+/* =========================================================================
    ETAPA 4: memória — mantida em memória da aba + persistida em sessionStorage
    ========================================================================= */
 let conversationState = null; // { provider, contents } (gemini) ou { provider, messages } (groq)
@@ -279,11 +363,11 @@ function saveConversation() {
    ========================================================================= */
 const MAX_TOOL_ITERATIONS = 5;
 
-async function runGeminiTurn(apiKey, model, userText) {
+async function runGeminiTurn(apiKey, model, userText, attachment) {
   if (!conversationState || conversationState.provider !== "gemini") {
     conversationState = { provider: "gemini", contents: [] };
   }
-  conversationState.contents.push({ role: "user", parts: [{ text: userText }] });
+  conversationState.contents.push({ role: "user", parts: buildUserPartsGemini(userText, attachment) });
 
   const tools = [{ functionDeclarations: TOOL_DEFS.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
 
@@ -324,11 +408,11 @@ async function runGeminiTurn(apiKey, model, userText) {
   return "Não consegui concluir a solicitação (limite de etapas atingido).";
 }
 
-async function runGroqTurn(apiKey, model, userText) {
+async function runGroqTurn(apiKey, model, userText, attachment) {
   if (!conversationState || conversationState.provider !== "groq") {
     conversationState = { provider: "groq", messages: [{ role: "system", content: SYSTEM_PROMPT }] };
   }
-  conversationState.messages.push({ role: "user", content: userText });
+  conversationState.messages.push({ role: "user", content: buildUserContentGroq(userText, attachment) });
 
   const tools = TOOL_DEFS.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
 
@@ -366,10 +450,10 @@ async function runGroqTurn(apiKey, model, userText) {
   return "Não consegui concluir a solicitação (limite de etapas atingido).";
 }
 
-async function runAgentTurn(userText) {
+async function runAgentTurn(userText, attachment) {
   const cfg = getConfig();
   if (!cfg) throw new Error("Configure sua chave de API primeiro (botão Configurar).");
-  const text = cfg.provider === "gemini" ? await runGeminiTurn(cfg.apiKey, cfg.model, userText) : await runGroqTurn(cfg.apiKey, cfg.model, userText);
+  const text = cfg.provider === "gemini" ? await runGeminiTurn(cfg.apiKey, cfg.model, userText, attachment) : await runGroqTurn(cfg.apiKey, cfg.model, userText, attachment);
   saveConversation();
   return text;
 }
@@ -397,6 +481,36 @@ const providerSelect = document.getElementById("providerSelect");
 const apiKeyInput = document.getElementById("apiKeyInput");
 const modelInput = document.getElementById("modelInput");
 const providerLink = document.getElementById("providerLink");
+const attachBtn = document.getElementById("attachBtn");
+const fileInput = document.getElementById("fileInput");
+const attachmentChip = document.getElementById("attachmentChip");
+const attachmentName = document.getElementById("attachmentName");
+const removeAttachmentBtn = document.getElementById("removeAttachment");
+
+let pendingAttachment = null;
+
+function clearAttachment() {
+  pendingAttachment = null;
+  fileInput.value = "";
+  attachmentChip.classList.remove("visible");
+}
+
+attachBtn.addEventListener("click", () => fileInput.click());
+
+fileInput.addEventListener("change", async () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  try {
+    pendingAttachment = await readFileAsAttachment(file);
+    attachmentName.textContent = `📎 ${pendingAttachment.name}`;
+    attachmentChip.classList.add("visible");
+  } catch (err) {
+    addMessage(err.message, "error");
+    clearAttachment();
+  }
+});
+
+removeAttachmentBtn.addEventListener("click", clearAttachment);
 
 function addMessage(text, role) {
   const div = document.createElement("div");
@@ -450,17 +564,20 @@ document.getElementById("saveSettings").addEventListener("click", () => {
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && !pendingAttachment) return;
 
   const cfg = getConfig();
   if (!cfg) { openSettings(); return; }
 
-  addMessage(text, "user");
+  const displayText = text || `📎 ${pendingAttachment.name}`;
+  addMessage(displayText, "user");
   input.value = "";
+  const attachmentToSend = pendingAttachment;
+  clearAttachment();
   const typingEl = addMessage("digitando...", "agent typing");
 
   try {
-    const reply = await runAgentTurn(text);
+    const reply = await runAgentTurn(text, attachmentToSend);
     typingEl.remove();
     addMessage(reply, "agent");
   } catch (err) {
